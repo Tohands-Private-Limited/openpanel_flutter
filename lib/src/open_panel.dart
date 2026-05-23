@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:math';
 
 import 'package:device_info_plus/device_info_plus.dart';
@@ -14,6 +13,7 @@ import 'package:openpanel_flutter/src/models/post_event_payload.dart';
 import 'package:openpanel_flutter/src/models/update_profile_payload.dart';
 import 'package:openpanel_flutter/src/observers/batch_lifecycle_observer.dart';
 import 'package:openpanel_flutter/src/observers/referrer_observer.dart';
+import 'package:openpanel_flutter/src/services/batch_drainer.dart';
 import 'package:openpanel_flutter/src/services/batch_flush_scheduler.dart';
 import 'package:openpanel_flutter/src/services/database/event_queue_database.dart';
 import 'package:openpanel_flutter/src/services/event_queue.dart';
@@ -86,6 +86,7 @@ class Openpanel {
   EventQueue? _eventQueue;
   BatchFlushScheduler? _scheduler;
   BatchLifecycleObserver? _lifecycleObserver;
+  BatchDrainer? _drainer;
 
   /// Initialise Openpanel.
   /// This must be called before using Openpanel.
@@ -155,6 +156,14 @@ class Openpanel {
     if (options.batchingEnabled) {
       final db = EventQueueDatabase.open();
       _eventQueue = EventQueue(db, maxRetries: options.maxRetries, logger: _logger);
+
+      _drainer = BatchDrainer(
+        queue: _eventQueue!,
+        batchFn: _httpClient.batch,
+        maxBatchSize: options.maxBatchSize,
+        logger: _logger,
+        onResponse: (r) => lastBatchResponse.value = r,
+      );
 
       _scheduler = BatchFlushScheduler(
         interval: options.flushInterval,
@@ -354,13 +363,38 @@ class Openpanel {
   }
 
   /// Gracefully stop the scheduler and close the database.
+  ///
+  /// Awaits a best-effort final flush before tearing down. The OS may kill the
+  /// process before the network request completes; in that case, events remain
+  /// in the local queue and are retried on the next launch.
+  ///
+  /// After [shutdown] returns, [initialize] may be called again to reinitialise
+  /// the SDK (all batching components are reset).
+  ///
   /// Call this during app teardown if you need explicit cleanup.
   Future<void> shutdown() async {
-    _scheduler?.stop();
+    // Best-effort flush — ignore errors; events stay queued for next launch.
+    if (_scheduler != null) {
+      try {
+        await _scheduler!.flushNow();
+      } catch (_) {
+        // ignore
+      }
+    }
+
     if (_lifecycleObserver != null) {
       WidgetsBinding.instance.removeObserver(_lifecycleObserver!);
     }
+    _scheduler?.stop();
     await _eventQueue?.close();
+
+    // Null out batching components so a subsequent initialize() re-runs the
+    // full init flow.
+    _scheduler = null;
+    _eventQueue = null;
+    _drainer = null;
+    _lifecycleObserver = null;
+    _isClientInitialised = false;
   }
 
   /// Returns the number of events currently pending in the local queue.
@@ -379,63 +413,17 @@ class Openpanel {
     required Map<String, dynamic> payload,
     required DateTime occurredAt,
   }) {
-    _eventQueue!.enqueue(type: type, payload: payload, occurredAt: occurredAt).then((_) {
+    _eventQueue!
+        .enqueue(type: type, payload: payload, occurredAt: occurredAt)
+        .then((_) {
       _scheduler!.notifyEnqueued();
+    }).catchError((Object e, StackTrace st) {
+      _logger.e('Failed to enqueue event', error: e, stackTrace: st);
+      return null;
     });
   }
 
-  Future<void> _drainQueue() async {
-    final batch = await _eventQueue!.pending(limit: options.maxBatchSize);
-    if (batch.isEmpty) return;
-
-    final events = batch
-        .map((row) => BatchedEvent(
-              type: row.type,
-              payload: Map<String, dynamic>.from(
-                  jsonDecode(row.payloadJson) as Map),
-            ))
-        .toList();
-    final allIds = batch.map((r) => r.id).toList();
-
-    try {
-      final response = await _httpClient.batch(events);
-
-      // Notify debug listeners of the latest batch result.
-      lastBatchResponse.value = response;
-
-      final rejectedIndices = <int>{};
-      for (final rejection in response.rejected) {
-        rejectedIndices.add(rejection.index);
-      }
-
-      final successIds =
-          allIds.whereIndexed((i, id) => !rejectedIndices.contains(i)).toList();
-      await _eventQueue!.markSent(successIds);
-
-      // Validation failures won't succeed on retry — drop them by marking sent (deletes them).
-      // Internal server errors are worth retrying.
-      final validationIds = response.rejected
-          .where((r) => r.reason == 'validation')
-          .map((r) => allIds[r.index])
-          .toList();
-      final internalIds = response.rejected
-          .where((r) => r.reason == 'internal')
-          .map((r) => allIds[r.index])
-          .toList();
-
-      if (validationIds.isNotEmpty) {
-        _logger.w(
-            'Dropping ${validationIds.length} event(s) rejected due to validation errors.');
-        await _eventQueue!.markSent(validationIds);
-      }
-      if (internalIds.isNotEmpty) {
-        await _eventQueue!.markFailed(internalIds, 'server internal error');
-      }
-    } on BatchTransportError catch (e) {
-      _logger.e('Batch transport error: $e');
-      await _eventQueue!.markFailed(allIds, e.toString());
-    }
-  }
+  Future<void> _drainQueue() => _drainer!.drainOnce();
 
   void _execute<T>(T Function() action) {
     if (!_isClientInitialised) {
@@ -487,12 +475,3 @@ class Openpanel {
   }
 }
 
-extension _IndexedWhere<T> on List<T> {
-  List<T> whereIndexed(bool Function(int index, T element) test) {
-    final result = <T>[];
-    for (var i = 0; i < length; i++) {
-      if (test(i, this[i])) result.add(this[i]);
-    }
-    return result;
-  }
-}
