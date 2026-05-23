@@ -1,3 +1,7 @@
+## 0.4.0
+- **New**: Opt-in batched event tracking via `batchingEnabled: true` in `OpenpanelOptions`. Configures `flushInterval` (default 60 s), `maxBatchSize` (default 50), and `maxRetries` (default 5). Events are persisted to a local SQLite database (drift) and flushed on a timer, when the queue reaches the size threshold, when the app backgrounds, or on an explicit `flush()` call. Events that fail delivery are retried up to `maxRetries` times before being dropped. Server-side validation rejections are dropped immediately without incrementing the retry counter.
+- **Fix**: `openpanel-sdk-version` header now correctly reflects the actual SDK version (was `0.2.0`, now `0.4.0`).
+
 ## 0.3.0
 - **Breaking**: Migrate to new OpenPanel tracking API
   - All API calls now use the unified `/track` endpoint

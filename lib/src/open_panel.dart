@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math';
 
 import 'package:device_info_plus/device_info_plus.dart';
@@ -5,17 +6,48 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:logger/web.dart';
 
+import 'package:openpanel_flutter/src/models/batch_payload.dart';
 import 'package:openpanel_flutter/src/models/open_panel_event_options.dart';
 import 'package:openpanel_flutter/src/models/open_panel_options.dart';
 import 'package:openpanel_flutter/src/models/open_panel_state.dart';
 import 'package:openpanel_flutter/src/models/post_event_payload.dart';
 import 'package:openpanel_flutter/src/models/update_profile_payload.dart';
+import 'package:openpanel_flutter/src/observers/batch_lifecycle_observer.dart';
 import 'package:openpanel_flutter/src/observers/referrer_observer.dart';
+import 'package:openpanel_flutter/src/services/batch_flush_scheduler.dart';
+import 'package:openpanel_flutter/src/services/database/event_queue_database.dart';
+import 'package:openpanel_flutter/src/services/event_queue.dart';
 import 'package:openpanel_flutter/src/services/openpanel_http_client.dart';
 import 'package:openpanel_flutter/src/services/preferences_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+
+/// A LogOutput that writes to the console AND forwards each log line to an
+/// optional registered callback.  Used by the debug screen to capture SDK logs.
+class _CallbackLogOutput extends LogOutput {
+  void Function(String)? _listener;
+
+  void setListener(void Function(String)? listener) {
+    _listener = listener;
+  }
+
+  @override
+  void output(OutputEvent event) {
+    // Mirror to console.
+    for (final line in event.lines) {
+      // ignore: avoid_print
+      print(line);
+    }
+    // Forward to listener (e.g., debug screen).
+    final listener = _listener;
+    if (listener != null) {
+      for (final line in event.lines) {
+        listener(line);
+      }
+    }
+  }
+}
 
 class Openpanel {
   /// Openpanel instance
@@ -32,7 +64,14 @@ class Openpanel {
 
   Openpanel._internal();
 
-  final Logger _logger = Logger();
+  final _CallbackLogOutput _callbackOutput = _CallbackLogOutput();
+
+  late final Logger _logger;
+
+  /// A [ValueNotifier] updated after every successful batch flush.
+  /// Listeners (e.g., the debug screen) are notified with the latest [BatchResponse].
+  static final ValueNotifier<BatchResponse?> lastBatchResponse =
+      ValueNotifier<BatchResponse?>(null);
 
   late final OpenpanelOptions options;
   late final PreferencesService _preferencesService;
@@ -42,6 +81,11 @@ class Openpanel {
   bool _isClientInitialised = false;
 
   OpenpanelState _state = const OpenpanelState();
+
+  // Batching components — only non-null when batchingEnabled.
+  EventQueue? _eventQueue;
+  BatchFlushScheduler? _scheduler;
+  BatchLifecycleObserver? _lifecycleObserver;
 
   /// Initialise Openpanel.
   /// This must be called before using Openpanel.
@@ -69,6 +113,9 @@ class Openpanel {
     }
     this.options = options;
 
+    // Initialise logger with our combined output (console + debug callback).
+    _logger = Logger(output: _callbackOutput);
+
     _preferencesService =
         PreferencesService(await SharedPreferences.getInstance());
 
@@ -95,7 +142,6 @@ class Openpanel {
 
       _preferencesService.persistState(_state);
     }
-    // HTTP CLient
 
     _httpClient = OpenpanelHttpClient(
       verbose: options.verbose,
@@ -105,6 +151,25 @@ class Openpanel {
     await _httpClient.init(options);
 
     WidgetsBinding.instance.addObserver(ReferrerObserver());
+
+    if (options.batchingEnabled) {
+      final db = EventQueueDatabase.open();
+      _eventQueue = EventQueue(db, maxRetries: options.maxRetries, logger: _logger);
+
+      _scheduler = BatchFlushScheduler(
+        interval: options.flushInterval,
+        sizeThreshold: options.maxBatchSize,
+        onFlush: _drainQueue,
+        pendingCountProvider: _eventQueue!.count,
+        logger: _logger,
+      );
+      _scheduler!.start();
+
+      _lifecycleObserver = BatchLifecycleObserver(
+        onBackground: () => _scheduler!.flushNow(),
+      );
+      WidgetsBinding.instance.addObserver(_lifecycleObserver!);
+    }
 
     _isClientInitialised = true;
   }
@@ -126,10 +191,23 @@ class Openpanel {
   void updateProfile({required UpdateProfilePayload payload}) {
     _execute(() {
       setProfileId(payload.profileId);
-      _httpClient.updateProfile(
-        payload: payload,
-        stateProperties: _state.properties,
-      );
+      if (options.batchingEnabled) {
+        final now = DateTime.now().toUtc();
+        final eventPayload = {
+          ...payload.toJson(),
+          'properties': {
+            ...payload.properties,
+            ..._state.properties,
+          },
+          '__timestamp': now.toIso8601String(),
+        };
+        _enqueueEvent(type: 'identify', payload: eventPayload, occurredAt: now);
+      } else {
+        _httpClient.updateProfile(
+          payload: payload,
+          stateProperties: _state.properties,
+        );
+      }
     });
   }
 
@@ -147,11 +225,25 @@ class Openpanel {
         return;
       }
 
-      _httpClient.increment(
-        profileId: profileId,
-        property: property,
-        value: value,
-      );
+      if (options.batchingEnabled) {
+        final now = DateTime.now().toUtc();
+        _enqueueEvent(
+          type: 'increment',
+          payload: {
+            'profileId': profileId,
+            'property': property,
+            'value': value,
+            '__timestamp': now.toIso8601String(),
+          },
+          occurredAt: now,
+        );
+      } else {
+        _httpClient.increment(
+          profileId: profileId,
+          property: property,
+          value: value,
+        );
+      }
     });
   }
 
@@ -169,11 +261,25 @@ class Openpanel {
         return;
       }
 
-      _httpClient.decrement(
-        profileId: profileId,
-        property: property,
-        value: value,
-      );
+      if (options.batchingEnabled) {
+        final now = DateTime.now().toUtc();
+        _enqueueEvent(
+          type: 'decrement',
+          payload: {
+            'profileId': profileId,
+            'property': property,
+            'value': value,
+            '__timestamp': now.toIso8601String(),
+          },
+          occurredAt: now,
+        );
+      } else {
+        _httpClient.decrement(
+          profileId: profileId,
+          property: property,
+          value: value,
+        );
+      }
     });
   }
 
@@ -187,19 +293,40 @@ class Openpanel {
   }) {
     _execute(() async {
       final profileId = properties['profileId'] ?? _state.profileId;
+      final mergedProps = {
+        ..._state.properties,
+        ...{...properties}..removeWhere((key, value) => key == 'profileId'),
+      };
 
-      _httpClient.event(
-        payload: PostEventPayload(
-          name: name,
-          timestamp: DateTime.timestamp().toIso8601String(),
-          deviceId: _state.deviceId,
-          properties: {
-            ..._state.properties,
-            ...{...properties}..removeWhere((key, value) => key == 'profileId'),
-          },
-          profileId: profileId,
-        ),
-      );
+      if (options.batchingEnabled) {
+        final now = DateTime.now().toUtc();
+        // Timestamp is embedded in properties so the server knows when the event
+        // actually occurred, not when the batch was delivered.
+        _enqueueEvent(
+          type: 'track',
+          payload: PostEventPayload(
+            name: name,
+            timestamp: now.toIso8601String(),
+            deviceId: _state.deviceId,
+            properties: {
+              ...mergedProps,
+              '__timestamp': now.toIso8601String(),
+            },
+            profileId: profileId,
+          ).toJson(),
+          occurredAt: now,
+        );
+      } else {
+        _httpClient.event(
+          payload: PostEventPayload(
+            name: name,
+            timestamp: DateTime.timestamp().toIso8601String(),
+            deviceId: _state.deviceId,
+            properties: mergedProps,
+            profileId: profileId,
+          ),
+        );
+      }
     });
   }
 
@@ -212,11 +339,102 @@ class Openpanel {
     });
   }
 
-  /// Clear all properties
-  /// Use this method if you want to reset the global properties
+  /// Clear all properties and queued events.
+  /// Use this method if you want to reset the global properties.
   Future<void> clear() async {
     _state = const OpenpanelState();
     await _preferencesService.persistState(_state);
+    await _eventQueue?.deleteAll();
+  }
+
+  /// Explicitly flush any pending queued events to the server.
+  /// No-op when batching is disabled.
+  Future<void> flush() async {
+    await _scheduler?.flushNow();
+  }
+
+  /// Gracefully stop the scheduler and close the database.
+  /// Call this during app teardown if you need explicit cleanup.
+  Future<void> shutdown() async {
+    _scheduler?.stop();
+    if (_lifecycleObserver != null) {
+      WidgetsBinding.instance.removeObserver(_lifecycleObserver!);
+    }
+    await _eventQueue?.close();
+  }
+
+  /// Returns the number of events currently pending in the local queue.
+  /// Returns 0 when batching is disabled or before initialisation.
+  Future<int> pendingEventCount() async =>
+      _eventQueue != null ? await _eventQueue!.count() : 0;
+
+  /// Register a callback that receives every SDK log line.
+  /// Pass [null] to unregister. Useful for the debug screen's network log.
+  void setDebugLogListener(void Function(String line)? listener) {
+    _callbackOutput.setListener(listener);
+  }
+
+  void _enqueueEvent({
+    required String type,
+    required Map<String, dynamic> payload,
+    required DateTime occurredAt,
+  }) {
+    _eventQueue!.enqueue(type: type, payload: payload, occurredAt: occurredAt).then((_) {
+      _scheduler!.notifyEnqueued();
+    });
+  }
+
+  Future<void> _drainQueue() async {
+    final batch = await _eventQueue!.pending(limit: options.maxBatchSize);
+    if (batch.isEmpty) return;
+
+    final events = batch
+        .map((row) => BatchedEvent(
+              type: row.type,
+              payload: Map<String, dynamic>.from(
+                  jsonDecode(row.payloadJson) as Map),
+            ))
+        .toList();
+    final allIds = batch.map((r) => r.id).toList();
+
+    try {
+      final response = await _httpClient.batch(events);
+
+      // Notify debug listeners of the latest batch result.
+      lastBatchResponse.value = response;
+
+      final rejectedIndices = <int>{};
+      for (final rejection in response.rejected) {
+        rejectedIndices.add(rejection.index);
+      }
+
+      final successIds =
+          allIds.whereIndexed((i, id) => !rejectedIndices.contains(i)).toList();
+      await _eventQueue!.markSent(successIds);
+
+      // Validation failures won't succeed on retry — drop them by marking sent (deletes them).
+      // Internal server errors are worth retrying.
+      final validationIds = response.rejected
+          .where((r) => r.reason == 'validation')
+          .map((r) => allIds[r.index])
+          .toList();
+      final internalIds = response.rejected
+          .where((r) => r.reason == 'internal')
+          .map((r) => allIds[r.index])
+          .toList();
+
+      if (validationIds.isNotEmpty) {
+        _logger.w(
+            'Dropping ${validationIds.length} event(s) rejected due to validation errors.');
+        await _eventQueue!.markSent(validationIds);
+      }
+      if (internalIds.isNotEmpty) {
+        await _eventQueue!.markFailed(internalIds, 'server internal error');
+      }
+    } on BatchTransportError catch (e) {
+      _logger.e('Batch transport error: $e');
+      await _eventQueue!.markFailed(allIds, e.toString());
+    }
   }
 
   void _execute<T>(T Function() action) {
@@ -266,5 +484,15 @@ class Openpanel {
     }
 
     return properties;
+  }
+}
+
+extension _IndexedWhere<T> on List<T> {
+  List<T> whereIndexed(bool Function(int index, T element) test) {
+    final result = <T>[];
+    for (var i = 0; i < length; i++) {
+      if (test(i, this[i])) result.add(this[i]);
+    }
+    return result;
   }
 }

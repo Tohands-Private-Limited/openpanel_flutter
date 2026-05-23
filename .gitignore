@@ -37,3 +37,6 @@ build/
 
 .flutter-plugins
 .flutter-plugins-dependencies
+
+# Local sandbox pub cache (created by docker-based test runs)
+.pub-cache-docker/

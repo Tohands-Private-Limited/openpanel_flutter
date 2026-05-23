@@ -3,8 +3,10 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:dio_smart_retry/dio_smart_retry.dart';
 import 'package:logger/logger.dart';
+import 'package:meta/meta.dart';
 import 'package:openpanel_flutter/openpanel_flutter.dart';
 import 'package:openpanel_flutter/src/constants/constants.dart';
+import 'package:openpanel_flutter/src/models/batch_payload.dart';
 import 'package:openpanel_flutter/src/models/post_event_payload.dart';
 
 import 'device_user_agent.dart';
@@ -21,6 +23,14 @@ class OpenpanelHttpClient {
     required Logger logger,
   }) : _logger = logger;
 
+  /// Constructor for testing — injects a pre-configured [Dio] instance so
+  /// tests can stub HTTP calls without going through [init].
+  @visibleForTesting
+  OpenpanelHttpClient.withDio(Dio dio, {required Logger logger})
+      : _dio = dio,
+        verbose = false,
+        _logger = logger;
+
   Future<void> init(OpenpanelOptions options) async {
     _dio = Dio(
       BaseOptions(
@@ -28,7 +38,7 @@ class OpenpanelHttpClient {
         headers: {
           'openpanel-client-id': options.clientId,
           'openpanel-sdk-name': 'openpanel-flutter',
-          'openpanel-sdk-version': '0.2.0',
+          'openpanel-sdk-version': '0.4.0',
           if (options.clientSecret != null)
             'openpanel-client-secret': options.clientSecret,
           'User-Agent': await DeviceUserAgent().getUserAgent(),
@@ -108,6 +118,21 @@ class OpenpanelHttpClient {
     }
 
     return response.response;
+  }
+
+  Future<BatchResponse> batch(List<BatchedEvent> events) async {
+    try {
+      final response = await _dio.post<Map<String, dynamic>>(
+        '/track/batch',
+        data: {'events': events.map((e) => e.toJson()).toList()},
+      );
+      return BatchResponse.fromJson(response.data!);
+    } on DioException catch (e) {
+      final statusCode = e.response?.statusCode;
+      throw BatchTransportError(e.message ?? e.toString(), statusCode: statusCode);
+    } on SocketException catch (e) {
+      throw BatchTransportError(e.message);
+    }
   }
 
   Future<ApiResponse> runApiCall<T, E>(Future<T> Function() apiCall) async {
