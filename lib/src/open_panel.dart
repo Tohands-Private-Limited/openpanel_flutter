@@ -161,6 +161,7 @@ class Openpanel {
         queue: _eventQueue!,
         batchFn: _httpClient.batch,
         maxBatchSize: options.maxBatchSize,
+        maxEventAge: options.maxEventAge,
         logger: _logger,
         onResponse: (r) => lastBatchResponse.value = r,
       );

@@ -38,6 +38,12 @@ class OpenpanelOptions {
   /// Only relevant when [batchingEnabled] is true.
   final int maxRetries;
 
+  /// Drop queued events older than this age before each drain. The openpanel
+  /// server rejects events whose timestamp is more than 5 days old, so anything
+  /// older has no chance of being accepted. Default: 5 days.
+  /// Only relevant when [batchingEnabled] is true.
+  final Duration maxEventAge;
+
   OpenpanelOptions({
     this.url,
     required this.clientId,
@@ -48,5 +54,6 @@ class OpenpanelOptions {
     this.flushInterval = const Duration(seconds: 60),
     this.maxBatchSize = 50,
     this.maxRetries = 5,
+    this.maxEventAge = const Duration(days: 5),
   });
 }

@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:drift/drift.dart' as drift;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:openpanel_flutter/src/services/database/event_queue_database.dart';
@@ -227,6 +228,80 @@ void main() {
             type: 'track', payload: {}, occurredAt: DateTime.now());
         await expectLater(queue.markFailed([], 'x'), completes);
         expect(await queue.count(), 1);
+      });
+    });
+
+    // -------------------------------------------------------------------------
+    // purgeOlderThan
+    // -------------------------------------------------------------------------
+    group('purgeOlderThan', () {
+      test('deletes only rows older than cutoff; returns correct count',
+          () async {
+        final old = DateTime.now().subtract(const Duration(days: 7));
+        final fresh = DateTime.now();
+
+        // Insert 2 old events and 1 fresh event via the queue enqueue,
+        // then overwrite createdAtMs directly via the DB for the old rows.
+        await queue.enqueue(
+            type: 'track', payload: {'n': 1}, occurredAt: old);
+        await queue.enqueue(
+            type: 'track', payload: {'n': 2}, occurredAt: old);
+        await queue.enqueue(
+            type: 'track', payload: {'n': 3}, occurredAt: fresh);
+
+        // Backdate createdAtMs for the first two rows.
+        final allRows = await queue.pending(limit: 10);
+        final oldMs = old.millisecondsSinceEpoch;
+        for (final row in allRows.take(2)) {
+          await (db.update(db.pendingEvents)
+                ..where((t) => t.id.equals(row.id)))
+              .write(PendingEventsCompanion(
+                  createdAtMs: drift.Value(oldMs)));
+        }
+
+        final cutoff = DateTime.now().subtract(const Duration(days: 5));
+        final purged = await queue.purgeOlderThan(cutoff);
+
+        expect(purged, 2);
+        expect(await queue.count(), 1);
+        final remaining = await queue.pending(limit: 10);
+        expect((jsonDecode(remaining.first.payloadJson) as Map)['n'], 3);
+      });
+
+      test('purgeOlderThan with no expired rows returns 0 and does not error',
+          () async {
+        await queue.enqueue(
+            type: 'track', payload: {}, occurredAt: DateTime.now());
+
+        final cutoff = DateTime.now().subtract(const Duration(days: 5));
+        final purged = await queue.purgeOlderThan(cutoff);
+
+        expect(purged, 0);
+        expect(await queue.count(), 1);
+      });
+
+      test('purgeOlderThan with all rows expired empties the queue', () async {
+        final old = DateTime.now().subtract(const Duration(days: 7));
+        await queue.enqueue(
+            type: 'track', payload: {'n': 1}, occurredAt: old);
+        await queue.enqueue(
+            type: 'track', payload: {'n': 2}, occurredAt: old);
+
+        // Backdate createdAtMs for all rows.
+        final allRows = await queue.pending(limit: 10);
+        final oldMs = old.millisecondsSinceEpoch;
+        for (final row in allRows) {
+          await (db.update(db.pendingEvents)
+                ..where((t) => t.id.equals(row.id)))
+              .write(PendingEventsCompanion(
+                  createdAtMs: drift.Value(oldMs)));
+        }
+
+        final cutoff = DateTime.now().subtract(const Duration(days: 5));
+        final purged = await queue.purgeOlderThan(cutoff);
+
+        expect(purged, 2);
+        expect(await queue.count(), 0);
       });
     });
 

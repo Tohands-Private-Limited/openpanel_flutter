@@ -50,12 +50,29 @@ class BatchResponse extends Equatable {
   List<Object?> get props => [accepted, rejected];
 }
 
+/// Thrown by [OpenpanelHttpClient.batch] when the batch cannot be delivered.
+///
+/// [isTransient] distinguishes two failure modes:
+///   - `true` — the request never reached an accepting server (connection
+///     error, timeout, DNS failure, server 5xx). The payload is intact and will
+///     succeed on retry; do NOT increment the event retry counter.
+///   - `false` — the server actively processed (or rejected) the request
+///     (HTTP 4xx). Retrying the same payload will not help; the retry counter
+///     SHOULD be incremented so the event is eventually dropped.
 class BatchTransportError implements Exception {
   final String message;
   final int? statusCode;
 
-  const BatchTransportError(this.message, {this.statusCode});
+  /// Whether this failure is transient (offline / server 5xx).
+  /// Transient failures should not count against the event retry budget.
+  final bool isTransient;
+
+  const BatchTransportError(
+    this.message, {
+    this.statusCode,
+    this.isTransient = false,
+  });
 
   @override
-  String toString() => 'BatchTransportError($statusCode): $message';
+  String toString() => 'BatchTransportError($statusCode, transient=$isTransient): $message';
 }

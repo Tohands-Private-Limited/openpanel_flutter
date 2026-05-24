@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart' as drift;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:logger/logger.dart';
@@ -53,11 +54,13 @@ void main() {
   BatchDrainer makeDrainer(
     Future<BatchResponse> Function(List<BatchedEvent>) batchFn, {
     int maxBatchSize = 50,
+    Duration maxEventAge = const Duration(days: 5),
   }) =>
       BatchDrainer(
         queue: queue,
         batchFn: batchFn,
         maxBatchSize: maxBatchSize,
+        maxEventAge: maxEventAge,
         logger: _silentLogger(),
       );
 
@@ -157,14 +160,39 @@ void main() {
   });
 
   // -------------------------------------------------------------------------
-  // BatchTransportError — all rows retried
+  // BatchTransportError — transient (offline / 5xx) does NOT increment retry
   // -------------------------------------------------------------------------
-  test('BatchTransportError — all rows incremented (whole batch retry)',
+  test(
+      'transient transport error (offline / 5xx) does NOT increment retry counter',
       () async {
     await _insertEvents(queue, 3);
 
-    final drainer = makeDrainer((_) async =>
-        throw const BatchTransportError('network timeout', statusCode: 503));
+    final drainer = makeDrainer((_) async => throw const BatchTransportError(
+          'connection refused',
+          isTransient: true,
+        ));
+    await drainer.drainOnce();
+
+    expect(await queue.count(), 3);
+    final rows = await queue.pending(limit: 10);
+    for (final r in rows) {
+      expect(r.retryCount, 0);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // BatchTransportError — non-transient (4xx) DOES increment retry counter
+  // -------------------------------------------------------------------------
+  test(
+      'non-transient transport error (4xx, e.g. 401) increments retry counter',
+      () async {
+    await _insertEvents(queue, 3);
+
+    final drainer = makeDrainer((_) async => throw const BatchTransportError(
+          'unauthorized',
+          statusCode: 401,
+          isTransient: false,
+        ));
     await drainer.drainOnce();
 
     expect(await queue.count(), 3);
@@ -282,5 +310,43 @@ void main() {
     expect(sentCount, 3);
     // 2 events remain (not yet drained).
     expect(await queue.count(), 2);
+  });
+
+  // -------------------------------------------------------------------------
+  // Age-based purge: events older than maxEventAge are purged before drain
+  // -------------------------------------------------------------------------
+  test('events older than maxEventAge are purged before drain', () async {
+    // Enqueue 3 events that will be backdated to 6 days ago.
+    await _insertEvents(queue, 3);
+    final oldRows = await queue.pending(limit: 10);
+    final sixDaysAgoMs =
+        DateTime.now().subtract(const Duration(days: 6)).millisecondsSinceEpoch;
+    for (final row in oldRows) {
+      await (db.update(db.pendingEvents)
+            ..where((t) => t.id.equals(row.id)))
+          .write(PendingEventsCompanion(
+              createdAtMs: drift.Value(sixDaysAgoMs)));
+    }
+
+    // Enqueue 2 fresh events.
+    await _insertEvents(queue, 2);
+    // Total now: 3 old + 2 fresh = 5 rows.
+    expect(await queue.count(), 5);
+
+    final List<List<BatchedEvent>> capturedBatches = [];
+    final drainer = makeDrainer(
+      (events) async {
+        capturedBatches.add(events);
+        return BatchResponse(accepted: events.length, rejected: []);
+      },
+      maxEventAge: const Duration(days: 5),
+    );
+    await drainer.drainOnce();
+
+    // The 3 old rows should have been purged; only the 2 fresh ones sent.
+    expect(capturedBatches.length, 1);
+    expect(capturedBatches.first.length, 2);
+    // Queue should be empty after successful drain of fresh events.
+    expect(await queue.count(), 0);
   });
 }

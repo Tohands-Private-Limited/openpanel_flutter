@@ -76,6 +76,21 @@ class EventQueue {
     });
   }
 
+  /// Delete all queued events whose [createdAtMs] is older than [cutoff].
+  /// Returns the number of rows deleted.
+  Future<int> purgeOlderThan(DateTime cutoff) async {
+    final cutoffMs = cutoff.millisecondsSinceEpoch;
+    final count = await (_db.delete(_db.pendingEvents)
+          ..where((t) => t.createdAtMs.isSmallerThanValue(cutoffMs)))
+        .go();
+    if (count > 0) {
+      _logger?.w(
+        'EventQueue: purged $count event(s) older than $cutoff (maxEventAge exceeded).',
+      );
+    }
+    return count;
+  }
+
   Future<void> deleteAll() async {
     await _db.delete(_db.pendingEvents).go();
   }

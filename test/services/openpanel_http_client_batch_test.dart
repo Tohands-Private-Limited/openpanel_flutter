@@ -168,6 +168,95 @@ void main() {
         )),
       );
     });
+
+    test('503 response → throws BatchTransportError with isTransient=true',
+        () async {
+      when(() => mockDio.post<Map<String, dynamic>>(
+            '/track/batch',
+            data: any(named: 'data'),
+          )).thenThrow(DioException(
+        requestOptions: RequestOptions(path: '/track/batch'),
+        response: Response(
+          requestOptions: RequestOptions(path: '/track/batch'),
+          statusCode: 503,
+        ),
+        message: 'Service Unavailable',
+        type: DioExceptionType.badResponse,
+      ));
+
+      expect(
+        () => client.batch([event1]),
+        throwsA(isA<BatchTransportError>()
+            .having((e) => e.statusCode, 'statusCode', 503)
+            .having((e) => e.isTransient, 'isTransient', isTrue)),
+      );
+    });
+
+    test('400 response → throws BatchTransportError with isTransient=false',
+        () async {
+      when(() => mockDio.post<Map<String, dynamic>>(
+            '/track/batch',
+            data: any(named: 'data'),
+          )).thenThrow(DioException(
+        requestOptions: RequestOptions(path: '/track/batch'),
+        response: Response(
+          requestOptions: RequestOptions(path: '/track/batch'),
+          statusCode: 400,
+        ),
+        message: 'Bad Request',
+        type: DioExceptionType.badResponse,
+      ));
+
+      expect(
+        () => client.batch([event1]),
+        throwsA(isA<BatchTransportError>()
+            .having((e) => e.statusCode, 'statusCode', 400)
+            .having((e) => e.isTransient, 'isTransient', isFalse)),
+      );
+    });
+
+    test(
+        'DioException with connectionError type → throws BatchTransportError with isTransient=true',
+        () async {
+      when(() => mockDio.post<Map<String, dynamic>>(
+            '/track/batch',
+            data: any(named: 'data'),
+          )).thenThrow(DioException(
+        requestOptions: RequestOptions(path: '/track/batch'),
+        message: 'Connection refused',
+        type: DioExceptionType.connectionError,
+      ));
+
+      expect(
+        () => client.batch([event1]),
+        throwsA(isA<BatchTransportError>()
+            .having((e) => e.isTransient, 'isTransient', isTrue)),
+      );
+    });
+
+    test(
+        'DioException with badResponse + 401 → throws BatchTransportError with isTransient=false',
+        () async {
+      when(() => mockDio.post<Map<String, dynamic>>(
+            '/track/batch',
+            data: any(named: 'data'),
+          )).thenThrow(DioException(
+        requestOptions: RequestOptions(path: '/track/batch'),
+        response: Response(
+          requestOptions: RequestOptions(path: '/track/batch'),
+          statusCode: 401,
+        ),
+        message: 'Unauthorized',
+        type: DioExceptionType.badResponse,
+      ));
+
+      expect(
+        () => client.batch([event1]),
+        throwsA(isA<BatchTransportError>()
+            .having((e) => e.statusCode, 'statusCode', 401)
+            .having((e) => e.isTransient, 'isTransient', isFalse)),
+      );
+    });
   });
 
   // -------------------------------------------------------------------------

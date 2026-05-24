@@ -129,9 +129,37 @@ class OpenpanelHttpClient {
       return BatchResponse.fromJson(response.data!);
     } on DioException catch (e) {
       final statusCode = e.response?.statusCode;
-      throw BatchTransportError(e.message ?? e.toString(), statusCode: statusCode);
+      throw BatchTransportError(
+        e.message ?? e.toString(),
+        statusCode: statusCode,
+        isTransient: _isTransientDioFailure(e),
+      );
     } on SocketException catch (e) {
-      throw BatchTransportError(e.message);
+      throw BatchTransportError(e.message, isTransient: true);
+    }
+  }
+
+  /// Returns true when a [DioException] represents a failure that is NOT the
+  /// event's fault — the server or network never accepted the payload, so
+  /// retrying the same batch can succeed without any changes.
+  ///
+  /// Bundling 5xx with connect failures: both indicate the server couldn't
+  /// process the request through no fault of the event data; the server will
+  /// likely recover, and the same payload should be retried as-is.
+  bool _isTransientDioFailure(DioException e) {
+    switch (e.type) {
+      case DioExceptionType.connectionError:
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+        return true;
+      case DioExceptionType.badResponse:
+        final code = e.response?.statusCode ?? 0;
+        return code >= 500 && code < 600;
+      case DioExceptionType.unknown:
+        return e.error is SocketException;
+      default:
+        return false;
     }
   }
 

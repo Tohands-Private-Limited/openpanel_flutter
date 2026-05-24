@@ -13,6 +13,7 @@ class BatchDrainer {
   final EventQueue _queue;
   final Future<BatchResponse> Function(List<BatchedEvent>) _batchFn;
   final int _maxBatchSize;
+  final Duration _maxEventAge;
   final Logger? _logger;
 
   /// Optional callback invoked with every successful [BatchResponse].
@@ -23,23 +24,31 @@ class BatchDrainer {
     required EventQueue queue,
     required Future<BatchResponse> Function(List<BatchedEvent>) batchFn,
     required int maxBatchSize,
+    Duration maxEventAge = const Duration(days: 5),
     Logger? logger,
     this.onResponse,
   })  : _queue = queue,
         _batchFn = batchFn,
         _maxBatchSize = maxBatchSize,
+        _maxEventAge = maxEventAge,
         _logger = logger;
 
   /// Performs one drain pass.
   ///
+  /// - Purges events older than [_maxEventAge] (server won't accept them anyway).
   /// - Fetches up to [_maxBatchSize] pending events.
   /// - Sends them via [_batchFn].
   /// - Marks accepted (and validation-rejected) rows as sent (deleted).
   /// - Marks internal-rejected rows as failed (retry counter ticks).
-  /// - On [BatchTransportError]: marks ALL rows as failed (whole batch retry).
+  /// - On transient [BatchTransportError] (offline / 5xx): leaves queue
+  ///   untouched — events are NOT counted against their retry budget.
+  /// - On non-transient [BatchTransportError] (4xx): marks ALL rows as failed
+  ///   (whole batch retry, counter ticks).
   /// - On any other exception: logs it and marks ALL rows as failed so the
   ///   retry counter ticks and "poisoned" batches are eventually dropped.
   Future<void> drainOnce() async {
+    await _queue.purgeOlderThan(DateTime.now().subtract(_maxEventAge));
+
     final batch = await _queue.pending(limit: _maxBatchSize);
     if (batch.isEmpty) return;
 
@@ -103,6 +112,13 @@ class BatchDrainer {
         await _queue.markFailed(internalIds, 'server internal error');
       }
     } on BatchTransportError catch (e) {
+      if (e.isTransient) {
+        _logger?.i(
+          'BatchDrainer: transient failure (offline / 5xx); leaving '
+          '${allIds.length} event(s) queued. Will retry on next flush.',
+        );
+        return;
+      }
       _logger?.e('BatchDrainer: transport error — $e');
       await _queue.markFailed(allIds, e.toString());
     } on Exception catch (e, st) {
