@@ -46,3 +46,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Drift web runtime assets (build artifacts, not source)
+web/sqlite3.wasm
+web/drift_worker.js
+web/drift_worker.js.deps
+web/drift_worker.js.map
