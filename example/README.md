@@ -1,16 +1,36 @@
-# example
+# openpanel_flutter example
 
-A new Flutter project.
+A demo app for the `openpanel_flutter` SDK that showcases the opt-in **batch event tracking** pipeline.
 
-## Getting Started
+## Setup
 
-This project is a starting point for a Flutter application.
+1. Copy the example env file and fill in your credentials:
 
-A few resources to get you started if this is your first Flutter project:
+   ```bash
+   cp assets/.env.example assets/.env.local
+   # then edit assets/.env.local with your real values
+   ```
 
-- [Lab: Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Cookbook: Useful Flutter samples](https://docs.flutter.dev/cookbook)
+2. Install dependencies and run:
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+   ```bash
+   flutter pub get
+   flutter run
+   ```
+
+The app initialises the SDK with `batchingEnabled: true`, a 30-second flush interval, and a batch size of 25 so you can observe the queuing and delivery behaviour quickly.
+
+## Debug screen
+
+Tap **Open debug panel** on the home screen to open the batch-tracking debug view.  It lets you:
+
+- See live pending event count (polled every second).
+- Generate 10 or 100 test events to trigger size-threshold or timer flushes.
+- Force an immediate flush and see elapsed time.
+- Wipe the local queue and state.
+- Watch a scrollable SDK log (network requests / responses / errors) in real time.
+- Inspect the last batch response: accepted count, rejected count, and rejection details.
+
+## Credentials
+
+`assets/.env.local` is gitignored.  `assets/.env.example` is committed as a template so other developers know what values to provide.
