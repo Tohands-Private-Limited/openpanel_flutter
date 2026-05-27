@@ -30,6 +30,7 @@ class PostEventPayload extends Equatable {
       'name': name,
       'timestamp': timestamp,
       'deviceId': deviceId,
+      // Omit profileId when null (logged-out) — server resolves via deviceId.
       if (profileId != null) 'profileId': profileId,
       'properties': properties,
     };

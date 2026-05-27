@@ -132,6 +132,9 @@ class Openpanel {
 
       if (deviceData.isNotEmpty) {
         setGlobalProperties(deviceData);
+        // profileId intentionally left null — logged-out users should not send
+        // profileId in events. The server resolves identity via deviceId alone.
+        // profileId is set later when the user explicitly calls updateProfile().
         _state = _state.copyWith(
           deviceId: deviceData['deviceId'] ?? const Uuid().v4(),
           isTracingSampled: sampled,
@@ -354,6 +357,8 @@ class Openpanel {
     // Preserve deviceId and sampling — these are device-scoped, not user-scoped.
     // Resetting them would permanently lose the device identity because
     // initialize() skips UUID generation when a saved state already exists.
+    // profileId is intentionally null — the server resolves logged-out users
+    // via deviceId alone. Do NOT assign a random UUID here.
     _state = OpenpanelState(
       deviceId: _state.deviceId,
       isTracingSampled: _state.isTracingSampled,
