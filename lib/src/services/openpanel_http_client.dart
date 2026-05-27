@@ -110,7 +110,9 @@ class OpenpanelHttpClient {
         'type': 'track',
         'payload': payload.toJson(),
       });
-      return response.data as String;
+      // Dio auto-decodes JSON responses to Map; only plain-text comes back as String.
+      final data = response.data;
+      return data is String ? data : data.toString();
     });
 
     if (response.error != null) {
