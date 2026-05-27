@@ -352,7 +352,13 @@ class Openpanel {
   /// Clear all properties and queued events.
   /// Use this method if you want to reset the global properties.
   Future<void> clear() async {
-    _state = const OpenpanelState();
+    // Preserve deviceId and sampling — these are device-scoped, not user-scoped.
+    // Resetting them would permanently lose the device identity because
+    // initialize() skips UUID generation when a saved state already exists.
+    _state = OpenpanelState(
+      deviceId: _state.deviceId,
+      isTracingSampled: _state.isTracingSampled,
+    );
     await _preferencesService.persistState(_state);
     await _eventQueue?.deleteAll();
   }
