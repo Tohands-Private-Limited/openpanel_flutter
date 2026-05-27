@@ -329,12 +329,16 @@ class Openpanel {
           occurredAt: now,
         );
       } else {
+        final now = DateTime.now().toUtc().toIso8601String();
         _httpClient.event(
           payload: PostEventPayload(
             name: name,
-            timestamp: DateTime.timestamp().toIso8601String(),
+            timestamp: now,
             deviceId: _state.deviceId,
-            properties: mergedProps,
+            properties: {
+              ...mergedProps,
+              '__timestamp': now,
+            },
             profileId: profileId,
           ),
         );
