@@ -2,14 +2,12 @@ import 'package:equatable/equatable.dart';
 
 class PostEventPayload extends Equatable {
   final String name;
-  final String timestamp;
   final String? deviceId;
   final String? profileId;
   final Map<String, dynamic> properties;
 
   const PostEventPayload({
     required this.name,
-    required this.timestamp,
     this.deviceId,
     this.profileId,
     this.properties = const {},
@@ -18,7 +16,6 @@ class PostEventPayload extends Equatable {
   factory PostEventPayload.fromJson(Map<String, dynamic> json) {
     return PostEventPayload(
       name: json['name'],
-      timestamp: json['timestamp'],
       deviceId: json['deviceId'],
       profileId: json['profileId'],
       properties: json['properties'],
@@ -28,7 +25,6 @@ class PostEventPayload extends Equatable {
   Map<String, dynamic> toJson() {
     return {
       'name': name,
-      'timestamp': timestamp,
       'deviceId': deviceId,
       // Omit profileId when null (logged-out) — server resolves via deviceId.
       if (profileId != null) 'profileId': profileId,
@@ -37,5 +33,5 @@ class PostEventPayload extends Equatable {
   }
 
   @override
-  List<Object?> get props => [name, timestamp, deviceId, profileId, properties];
+  List<Object?> get props => [name, deviceId, profileId, properties];
 }

@@ -312,13 +312,10 @@ class Openpanel {
 
       if (options.batchingEnabled) {
         final now = DateTime.now().toUtc();
-        // Timestamp is embedded in properties so the server knows when the event
-        // actually occurred, not when the batch was delivered.
         _enqueueEvent(
           type: 'track',
           payload: PostEventPayload(
             name: name,
-            timestamp: now.toIso8601String(),
             deviceId: _state.deviceId,
             properties: {
               ...mergedProps,
@@ -329,15 +326,13 @@ class Openpanel {
           occurredAt: now,
         );
       } else {
-        final now = DateTime.now().toUtc().toIso8601String();
         _httpClient.event(
           payload: PostEventPayload(
             name: name,
-            timestamp: now,
             deviceId: _state.deviceId,
             properties: {
               ...mergedProps,
-              '__timestamp': now,
+              '__timestamp': DateTime.now().toUtc().toIso8601String(),
             },
             profileId: profileId,
           ),

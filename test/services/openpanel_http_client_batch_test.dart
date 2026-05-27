@@ -304,7 +304,6 @@ void main() {
       await client.event(
         payload: PostEventPayload(
           name: 'screen_view',
-          timestamp: '2026-01-01T00:00:00.000Z',
           deviceId: 'device-1',
           profileId: null,
         ),
@@ -336,7 +335,6 @@ void main() {
       await client.event(
         payload: PostEventPayload(
           name: 'screen_view',
-          timestamp: '2026-01-01T00:00:00.000Z',
           deviceId: 'device-1',
           profileId: 'user-123',
         ),
