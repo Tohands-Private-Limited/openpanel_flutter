@@ -355,8 +355,10 @@ class Openpanel {
     // Preserve deviceId and sampling — these are device-scoped, not user-scoped.
     // Resetting them would permanently lose the device identity because
     // initialize() skips UUID generation when a saved state already exists.
+    // Assign a fresh profileId — the server rejects null profileId with 400.
     _state = OpenpanelState(
       deviceId: _state.deviceId,
+      profileId: const Uuid().v4(),
       isTracingSampled: _state.isTracingSampled,
     );
     await _preferencesService.persistState(_state);
