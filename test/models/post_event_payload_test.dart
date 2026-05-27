@@ -6,7 +6,6 @@ void main() {
     test('includes profileId when non-null', () {
       final payload = PostEventPayload(
         name: 'screen_view',
-        timestamp: '2026-01-01T00:00:00.000Z',
         deviceId: 'device-1',
         profileId: 'user-123',
       );
@@ -20,7 +19,6 @@ void main() {
     test('omits profileId entirely when null (logged-out user)', () {
       final payload = PostEventPayload(
         name: 'screen_view',
-        timestamp: '2026-01-01T00:00:00.000Z',
         deviceId: 'device-1',
         profileId: null,
       );
@@ -35,7 +33,6 @@ void main() {
     test('omits profileId when not provided (default null)', () {
       final payload = PostEventPayload(
         name: 'screen_view',
-        timestamp: '2026-01-01T00:00:00.000Z',
         deviceId: 'device-1',
       );
 
@@ -44,10 +41,9 @@ void main() {
       expect(json.containsKey('profileId'), isFalse);
     });
 
-    test('always includes deviceId, name, timestamp, and properties', () {
+    test('always includes deviceId, name, and properties', () {
       final payload = PostEventPayload(
         name: 'tap_button',
-        timestamp: '2026-01-01T00:00:00.000Z',
         deviceId: 'device-1',
         properties: {'screen': 'home'},
       );
@@ -55,9 +51,19 @@ void main() {
       final json = payload.toJson();
 
       expect(json['name'], 'tap_button');
-      expect(json['timestamp'], '2026-01-01T00:00:00.000Z');
       expect(json['deviceId'], 'device-1');
       expect(json['properties'], {'screen': 'home'});
+    });
+
+    test('does not include a top-level timestamp field', () {
+      final payload = PostEventPayload(
+        name: 'tap_button',
+        deviceId: 'device-1',
+      );
+
+      final json = payload.toJson();
+
+      expect(json.containsKey('timestamp'), isFalse);
     });
   });
 }
