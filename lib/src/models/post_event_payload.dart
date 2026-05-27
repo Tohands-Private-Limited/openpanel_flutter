@@ -30,7 +30,7 @@ class PostEventPayload extends Equatable {
       'name': name,
       'timestamp': timestamp,
       'deviceId': deviceId,
-      'profileId': profileId,
+      if (profileId != null) 'profileId': profileId,
       'properties': properties,
     };
   }
