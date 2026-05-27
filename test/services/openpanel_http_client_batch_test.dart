@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:logger/logger.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:openpanel_flutter/src/models/batch_payload.dart';
+import 'package:openpanel_flutter/src/models/post_event_payload.dart';
 import 'package:openpanel_flutter/src/models/update_profile_payload.dart';
 import 'package:openpanel_flutter/src/services/openpanel_http_client.dart';
 
@@ -287,6 +288,68 @@ void main() {
 
       final body = captured.first as Map<String, dynamic>;
       expect(body['type'], 'identify');
+    });
+
+    test('event() omits profileId from /track payload when user is logged out',
+        () async {
+      when(() => mockDio.post<dynamic>(
+            '/track',
+            data: any(named: 'data'),
+          )).thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: '/track'),
+            statusCode: 200,
+            data: 'ok',
+          ));
+
+      await client.event(
+        payload: PostEventPayload(
+          name: 'screen_view',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          deviceId: 'device-1',
+          profileId: null,
+        ),
+      );
+
+      final captured = verify(() => mockDio.post<dynamic>(
+            '/track',
+            data: captureAny(named: 'data'),
+          )).captured;
+
+      final body = captured.first as Map<String, dynamic>;
+      final payload = body['payload'] as Map<String, dynamic>;
+      expect(payload.containsKey('profileId'), isFalse,
+          reason: 'profileId must not be sent to the server when user is '
+              'logged out — server resolves identity via deviceId');
+    });
+
+    test('event() includes profileId in /track payload when user is logged in',
+        () async {
+      when(() => mockDio.post<dynamic>(
+            '/track',
+            data: any(named: 'data'),
+          )).thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: '/track'),
+            statusCode: 200,
+            data: 'ok',
+          ));
+
+      await client.event(
+        payload: PostEventPayload(
+          name: 'screen_view',
+          timestamp: '2026-01-01T00:00:00.000Z',
+          deviceId: 'device-1',
+          profileId: 'user-123',
+        ),
+      );
+
+      final captured = verify(() => mockDio.post<dynamic>(
+            '/track',
+            data: captureAny(named: 'data'),
+          )).captured;
+
+      final body = captured.first as Map<String, dynamic>;
+      final payload = body['payload'] as Map<String, dynamic>;
+      expect(payload['profileId'], 'user-123');
     });
   });
 }
