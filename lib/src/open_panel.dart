@@ -23,6 +23,8 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
 
+import 'package:openpanel_flutter/src/utils/insert_id_generator.dart';
+
 /// A LogOutput that writes to the console AND forwards each log line to an
 /// optional registered callback.  Used by the debug screen to capture SDK logs.
 class _CallbackLogOutput extends LogOutput {
@@ -203,6 +205,7 @@ class Openpanel {
   void updateProfile({required UpdateProfilePayload payload}) {
     _execute(() {
       setProfileId(payload.profileId);
+      final insertId = generateInsertId(_state.deviceId);
       if (options.batchingEnabled) {
         final now = DateTime.now().toUtc();
         final eventPayload = {
@@ -210,6 +213,7 @@ class Openpanel {
           'properties': {
             ...payload.properties,
             ..._state.properties,
+            '__insert_id': insertId,
           },
           '__timestamp': now.toIso8601String(),
         };
@@ -217,7 +221,10 @@ class Openpanel {
       } else {
         _httpClient.updateProfile(
           payload: payload,
-          stateProperties: _state.properties,
+          stateProperties: {
+            ..._state.properties,
+            '__insert_id': insertId,
+          },
         );
       }
     });
@@ -237,6 +244,7 @@ class Openpanel {
         return;
       }
 
+      final insertId = generateInsertId(_state.deviceId);
       if (options.batchingEnabled) {
         final now = DateTime.now().toUtc();
         _enqueueEvent(
@@ -246,6 +254,7 @@ class Openpanel {
             'property': property,
             'value': value,
             '__timestamp': now.toIso8601String(),
+            '__insert_id': insertId,
           },
           occurredAt: now,
         );
@@ -273,6 +282,7 @@ class Openpanel {
         return;
       }
 
+      final insertId = generateInsertId(_state.deviceId);
       if (options.batchingEnabled) {
         final now = DateTime.now().toUtc();
         _enqueueEvent(
@@ -282,6 +292,7 @@ class Openpanel {
             'property': property,
             'value': value,
             '__timestamp': now.toIso8601String(),
+            '__insert_id': insertId,
           },
           occurredAt: now,
         );
@@ -309,6 +320,7 @@ class Openpanel {
         ..._state.properties,
         ...{...properties}..removeWhere((key, value) => key == 'profileId'),
       };
+      final insertId = generateInsertId(_state.deviceId);
 
       if (options.batchingEnabled) {
         final now = DateTime.now().toUtc();
@@ -320,6 +332,7 @@ class Openpanel {
             properties: {
               ...mergedProps,
               '__timestamp': now.toIso8601String(),
+              '__insert_id': insertId,
             },
             profileId: profileId,
           ).toJson(),
@@ -333,6 +346,7 @@ class Openpanel {
             properties: {
               ...mergedProps,
               '__timestamp': DateTime.now().toUtc().toIso8601String(),
+              '__insert_id': insertId,
             },
             profileId: profileId,
           ),
