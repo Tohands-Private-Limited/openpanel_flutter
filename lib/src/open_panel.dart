@@ -364,8 +364,13 @@ class Openpanel {
     });
   }
 
-  /// Clear all properties and queued events.
-  /// Use this method if you want to reset the global properties.
+  /// Reset user-scoped state (profileId, global properties). Call on logout.
+  ///
+  /// The pending event queue is intentionally left untouched: each queued event
+  /// already carries its own `profileId`/`deviceId` in the payload (frozen at
+  /// enqueue time), so leftover events deliver under their original identity on
+  /// the next flush. This matches the behaviour of Segment, Amplitude, and
+  /// Mixpanel-Android.
   Future<void> clear() async {
     // Preserve deviceId and sampling — these are device-scoped, not user-scoped.
     // Resetting them would permanently lose the device identity because
@@ -377,7 +382,6 @@ class Openpanel {
       isTracingSampled: _state.isTracingSampled,
     );
     await _preferencesService.persistState(_state);
-    await _eventQueue?.deleteAll();
   }
 
   /// Explicitly flush any pending queued events to the server.
