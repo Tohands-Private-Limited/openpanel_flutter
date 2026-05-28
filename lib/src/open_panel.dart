@@ -476,7 +476,16 @@ class Openpanel {
       'installerStore': packageInfo.installerStore,
     };
 
-    if (defaultTargetPlatform == TargetPlatform.android) {
+    if (kIsWeb) {
+      final WebBrowserInfo webInfo = await deviceInfo.webBrowserInfo;
+      properties.addAll({
+        'deviceId': const Uuid().v4(),
+        'brand': webInfo.browserName.name,
+        'model': webInfo.platform ?? 'Web',
+        'osVersion': webInfo.appVersion ?? 'Unknown',
+        'userAgent': webInfo.userAgent ?? '',
+      });
+    } else if (defaultTargetPlatform == TargetPlatform.android) {
       final AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
       properties.addAll({
         'deviceId': androidInfo.id,
