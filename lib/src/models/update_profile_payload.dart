@@ -29,12 +29,14 @@ class UpdateProfilePayload extends Equatable {
   }
 
   Map<String, dynamic> toJson() {
+    // Omit null optional fields — the server's Zod schema uses .optional()
+    // which accepts absent keys but rejects explicit null values.
     return {
       'profileId': profileId,
-      'firstName': firstName,
-      'lastName': lastName,
-      'avatar': avatar,
-      'email': email,
+      if (firstName != null) 'firstName': firstName,
+      if (lastName != null) 'lastName': lastName,
+      if (avatar != null) 'avatar': avatar,
+      if (email != null) 'email': email,
       'properties': properties,
     };
   }

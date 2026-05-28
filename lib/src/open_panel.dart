@@ -5,17 +5,51 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:logger/web.dart';
 
+import 'package:openpanel_flutter/src/models/batch_payload.dart';
 import 'package:openpanel_flutter/src/models/open_panel_event_options.dart';
 import 'package:openpanel_flutter/src/models/open_panel_options.dart';
 import 'package:openpanel_flutter/src/models/open_panel_state.dart';
 import 'package:openpanel_flutter/src/models/post_event_payload.dart';
 import 'package:openpanel_flutter/src/models/update_profile_payload.dart';
+import 'package:openpanel_flutter/src/observers/batch_lifecycle_observer.dart';
 import 'package:openpanel_flutter/src/observers/referrer_observer.dart';
+import 'package:openpanel_flutter/src/services/batch_drainer.dart';
+import 'package:openpanel_flutter/src/services/batch_flush_scheduler.dart';
+import 'package:openpanel_flutter/src/services/database/event_queue_database.dart';
+import 'package:openpanel_flutter/src/services/event_queue.dart';
 import 'package:openpanel_flutter/src/services/openpanel_http_client.dart';
 import 'package:openpanel_flutter/src/services/preferences_service.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:uuid/uuid.dart';
+
+import 'package:openpanel_flutter/src/utils/insert_id_generator.dart';
+
+/// A LogOutput that writes to the console AND forwards each log line to an
+/// optional registered callback.  Used by the debug screen to capture SDK logs.
+class _CallbackLogOutput extends LogOutput {
+  void Function(String)? _listener;
+
+  void setListener(void Function(String)? listener) {
+    _listener = listener;
+  }
+
+  @override
+  void output(OutputEvent event) {
+    // Mirror to console.
+    for (final line in event.lines) {
+      // ignore: avoid_print
+      print(line);
+    }
+    // Forward to listener (e.g., debug screen).
+    final listener = _listener;
+    if (listener != null) {
+      for (final line in event.lines) {
+        listener(line);
+      }
+    }
+  }
+}
 
 class Openpanel {
   /// Openpanel instance
@@ -32,7 +66,14 @@ class Openpanel {
 
   Openpanel._internal();
 
-  final Logger _logger = Logger();
+  final _CallbackLogOutput _callbackOutput = _CallbackLogOutput();
+
+  late final Logger _logger;
+
+  /// A [ValueNotifier] updated after every successful batch flush.
+  /// Listeners (e.g., the debug screen) are notified with the latest [BatchResponse].
+  static final ValueNotifier<BatchResponse?> lastBatchResponse =
+      ValueNotifier<BatchResponse?>(null);
 
   late final OpenpanelOptions options;
   late final PreferencesService _preferencesService;
@@ -42,6 +83,12 @@ class Openpanel {
   bool _isClientInitialised = false;
 
   OpenpanelState _state = const OpenpanelState();
+
+  // Batching components — only non-null when batchingEnabled.
+  EventQueue? _eventQueue;
+  BatchFlushScheduler? _scheduler;
+  BatchLifecycleObserver? _lifecycleObserver;
+  BatchDrainer? _drainer;
 
   /// Initialise Openpanel.
   /// This must be called before using Openpanel.
@@ -69,6 +116,9 @@ class Openpanel {
     }
     this.options = options;
 
+    // Initialise logger with our combined output (console + debug callback).
+    _logger = Logger(output: _callbackOutput);
+
     _preferencesService =
         PreferencesService(await SharedPreferences.getInstance());
 
@@ -84,8 +134,10 @@ class Openpanel {
 
       if (deviceData.isNotEmpty) {
         setGlobalProperties(deviceData);
+        // profileId intentionally left null — logged-out users should not send
+        // profileId in events. The server resolves identity via deviceId alone.
+        // profileId is set later when the user explicitly calls updateProfile().
         _state = _state.copyWith(
-          profileId: const Uuid().v4(),
           deviceId: deviceData['deviceId'] ?? const Uuid().v4(),
           isTracingSampled: sampled,
         );
@@ -95,7 +147,6 @@ class Openpanel {
 
       _preferencesService.persistState(_state);
     }
-    // HTTP CLient
 
     _httpClient = OpenpanelHttpClient(
       verbose: options.verbose,
@@ -105,6 +156,34 @@ class Openpanel {
     await _httpClient.init(options);
 
     WidgetsBinding.instance.addObserver(ReferrerObserver());
+
+    if (options.batchingEnabled) {
+      final db = EventQueueDatabase.open();
+      _eventQueue = EventQueue(db, maxRetries: options.maxRetries, logger: _logger);
+
+      _drainer = BatchDrainer(
+        queue: _eventQueue!,
+        batchFn: _httpClient.batch,
+        maxBatchSize: options.maxBatchSize,
+        maxEventAge: options.maxEventAge,
+        logger: _logger,
+        onResponse: (r) => lastBatchResponse.value = r,
+      );
+
+      _scheduler = BatchFlushScheduler(
+        interval: options.flushInterval,
+        sizeThreshold: options.maxBatchSize,
+        onFlush: _drainQueue,
+        pendingCountProvider: _eventQueue!.count,
+        logger: _logger,
+      );
+      _scheduler!.start();
+
+      _lifecycleObserver = BatchLifecycleObserver(
+        onBackground: () => _scheduler!.flushNow(),
+      );
+      WidgetsBinding.instance.addObserver(_lifecycleObserver!);
+    }
 
     _isClientInitialised = true;
   }
@@ -126,10 +205,28 @@ class Openpanel {
   void updateProfile({required UpdateProfilePayload payload}) {
     _execute(() {
       setProfileId(payload.profileId);
-      _httpClient.updateProfile(
-        payload: payload,
-        stateProperties: _state.properties,
-      );
+      final insertId = generateInsertId(_state.deviceId);
+      if (options.batchingEnabled) {
+        final now = DateTime.now().toUtc();
+        final eventPayload = {
+          ...payload.toJson(),
+          'properties': {
+            ...payload.properties,
+            ..._state.properties,
+            '__insert_id': insertId,
+          },
+          '__timestamp': now.toIso8601String(),
+        };
+        _enqueueEvent(type: 'identify', payload: eventPayload, occurredAt: now);
+      } else {
+        _httpClient.updateProfile(
+          payload: payload,
+          stateProperties: {
+            ..._state.properties,
+            '__insert_id': insertId,
+          },
+        );
+      }
     });
   }
 
@@ -147,11 +244,27 @@ class Openpanel {
         return;
       }
 
-      _httpClient.increment(
-        profileId: profileId,
-        property: property,
-        value: value,
-      );
+      final insertId = generateInsertId(_state.deviceId);
+      if (options.batchingEnabled) {
+        final now = DateTime.now().toUtc();
+        _enqueueEvent(
+          type: 'increment',
+          payload: {
+            'profileId': profileId,
+            'property': property,
+            'value': value,
+            '__timestamp': now.toIso8601String(),
+            '__insert_id': insertId,
+          },
+          occurredAt: now,
+        );
+      } else {
+        _httpClient.increment(
+          profileId: profileId,
+          property: property,
+          value: value,
+        );
+      }
     });
   }
 
@@ -169,11 +282,27 @@ class Openpanel {
         return;
       }
 
-      _httpClient.decrement(
-        profileId: profileId,
-        property: property,
-        value: value,
-      );
+      final insertId = generateInsertId(_state.deviceId);
+      if (options.batchingEnabled) {
+        final now = DateTime.now().toUtc();
+        _enqueueEvent(
+          type: 'decrement',
+          payload: {
+            'profileId': profileId,
+            'property': property,
+            'value': value,
+            '__timestamp': now.toIso8601String(),
+            '__insert_id': insertId,
+          },
+          occurredAt: now,
+        );
+      } else {
+        _httpClient.decrement(
+          profileId: profileId,
+          property: property,
+          value: value,
+        );
+      }
     });
   }
 
@@ -187,19 +316,42 @@ class Openpanel {
   }) {
     _execute(() async {
       final profileId = properties['profileId'] ?? _state.profileId;
+      final mergedProps = {
+        ..._state.properties,
+        ...{...properties}..removeWhere((key, value) => key == 'profileId'),
+      };
+      final insertId = generateInsertId(_state.deviceId);
 
-      _httpClient.event(
-        payload: PostEventPayload(
-          name: name,
-          timestamp: DateTime.timestamp().toIso8601String(),
-          deviceId: _state.deviceId,
-          properties: {
-            ..._state.properties,
-            ...{...properties}..removeWhere((key, value) => key == 'profileId'),
-          },
-          profileId: profileId,
-        ),
-      );
+      if (options.batchingEnabled) {
+        final now = DateTime.now().toUtc();
+        _enqueueEvent(
+          type: 'track',
+          payload: PostEventPayload(
+            name: name,
+            deviceId: _state.deviceId,
+            properties: {
+              ...mergedProps,
+              '__timestamp': now.toIso8601String(),
+              '__insert_id': insertId,
+            },
+            profileId: profileId,
+          ).toJson(),
+          occurredAt: now,
+        );
+      } else {
+        _httpClient.event(
+          payload: PostEventPayload(
+            name: name,
+            deviceId: _state.deviceId,
+            properties: {
+              ...mergedProps,
+              '__timestamp': DateTime.now().toUtc().toIso8601String(),
+              '__insert_id': insertId,
+            },
+            profileId: profileId,
+          ),
+        );
+      }
     });
   }
 
@@ -212,12 +364,90 @@ class Openpanel {
     });
   }
 
-  /// Clear all properties
-  /// Use this method if you want to reset the global properties
+  /// Clear all properties and queued events.
+  /// Use this method if you want to reset the global properties.
   Future<void> clear() async {
-    _state = const OpenpanelState();
+    // Preserve deviceId and sampling — these are device-scoped, not user-scoped.
+    // Resetting them would permanently lose the device identity because
+    // initialize() skips UUID generation when a saved state already exists.
+    // profileId is intentionally null — the server resolves logged-out users
+    // via deviceId alone. Do NOT assign a random UUID here.
+    _state = OpenpanelState(
+      deviceId: _state.deviceId,
+      isTracingSampled: _state.isTracingSampled,
+    );
     await _preferencesService.persistState(_state);
+    await _eventQueue?.deleteAll();
   }
+
+  /// Explicitly flush any pending queued events to the server.
+  /// No-op when batching is disabled.
+  Future<void> flush() async {
+    await _scheduler?.flushNow();
+  }
+
+  /// Gracefully stop the scheduler and close the database.
+  ///
+  /// Awaits a best-effort final flush before tearing down. The OS may kill the
+  /// process before the network request completes; in that case, events remain
+  /// in the local queue and are retried on the next launch.
+  ///
+  /// After [shutdown] returns, [initialize] may be called again to reinitialise
+  /// the SDK (all batching components are reset).
+  ///
+  /// Call this during app teardown if you need explicit cleanup.
+  Future<void> shutdown() async {
+    // Best-effort flush — ignore errors; events stay queued for next launch.
+    if (_scheduler != null) {
+      try {
+        await _scheduler!.flushNow();
+      } catch (_) {
+        // ignore
+      }
+    }
+
+    if (_lifecycleObserver != null) {
+      WidgetsBinding.instance.removeObserver(_lifecycleObserver!);
+    }
+    _scheduler?.stop();
+    await _eventQueue?.close();
+
+    // Null out batching components so a subsequent initialize() re-runs the
+    // full init flow.
+    _scheduler = null;
+    _eventQueue = null;
+    _drainer = null;
+    _lifecycleObserver = null;
+    _isClientInitialised = false;
+  }
+
+  /// Returns the number of events currently pending in the local queue.
+  /// Returns 0 when batching is disabled or before initialisation.
+  Future<int> pendingEventCount() async =>
+      _eventQueue != null ? await _eventQueue!.count() : 0;
+
+  /// Register a callback that receives every SDK log line.
+  /// Pass [null] to unregister. Useful for the debug screen's network log.
+  void setDebugLogListener(void Function(String line)? listener) {
+    _callbackOutput.setListener(listener);
+  }
+
+  void _enqueueEvent({
+    required String type,
+    required Map<String, dynamic> payload,
+    required DateTime occurredAt,
+  }) {
+    _eventQueue!
+        .enqueue(type: type, payload: payload, occurredAt: occurredAt)
+        .then((_) {
+      _scheduler!.notifyEnqueued();
+    }).catchError((Object e, StackTrace st) {
+      _logger.e('Failed to enqueue event', error: e, stackTrace: st);
+      return null;
+    });
+  }
+
+  Future<void> _drainQueue() => _drainer!.drainOnce();
 
   void _execute<T>(T Function() action) {
     if (!_isClientInitialised) {
@@ -268,3 +498,4 @@ class Openpanel {
     return properties;
   }
 }
+

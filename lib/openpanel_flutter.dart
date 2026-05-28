@@ -1,4 +1,5 @@
 export 'src/open_panel.dart';
+export 'src/models/batch_payload.dart' show BatchTransportError, BatchResponse, BatchRejection;
 export 'src/models/open_panel_event_options.dart';
 export 'src/models/open_panel_options.dart';
 export 'src/models/update_profile_payload.dart';
