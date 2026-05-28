@@ -1,14 +1,33 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:openpanel_flutter/openpanel_flutter.dart';
 
-void main() async {
+import 'debug_screen.dart';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Initialize OpenPanel
+  // Load credentials from .env.local; fall back to .env.example in CI.
+  try {
+    await dotenv.load(fileName: 'assets/.env.local');
+  } catch (_) {
+    debugPrint(
+      '[openpanel] WARNING: assets/.env.local not found — falling back to '
+      'assets/.env.example. These are placeholder credentials; events will '
+      'NOT be accepted by the server.',
+    );
+    await dotenv.load(fileName: 'assets/.env.example');
+  }
+
   await Openpanel.instance.initialize(
     options: OpenpanelOptions(
-      clientId: 'YOUR_CLIENT_ID',
-      clientSecret: 'YOUR_CLIENT_SECRET',
+      url: dotenv.env['OPENPANEL_API_URL'],
+      clientId: dotenv.env['OPENPANEL_CLIENT_ID'] ?? '',
+      clientSecret: dotenv.env['OPENPANEL_CLIENT_SECRET'],
+      batchingEnabled: true,
+      flushInterval: const Duration(seconds: 30),
+      maxBatchSize: 25,
+      maxRetries: 5,
       verbose: true,
     ),
   );
@@ -22,97 +41,164 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'OpenPanel Demo',
-      navigatorObservers: [
-        // Track navigation automatically
-        OpenpanelObserver(),
-      ],
+      title: 'openpanel_flutter demo',
+      navigatorObservers: [OpenpanelObserver()],
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
         useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'OpenPanel Flutter Demo'),
+      routes: {
+        '/': (_) => const HomeScreen(),
+        '/debug': (_) => const DebugScreen(),
+      },
+      initialRoute: '/',
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+// ---------------------------------------------------------------------------
+// Home screen
+// ---------------------------------------------------------------------------
 
-  final String title;
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+class _HomeScreenState extends State<HomeScreen> {
+  int _clickCount = 0;
 
-  void _incrementCounter() {
-    setState(() {
-      _counter++;
-    });
-
-    // Track an event
+  void _trackButtonClick() {
+    setState(() => _clickCount++);
     Openpanel.instance.event(
       name: 'button_clicked',
-      properties: {'count': _counter, 'screen': 'home'},
-    );
-
-    // Increment a user property
-    Openpanel.instance.increment(
-      property: 'clicks',
-      value: 1,
-      eventOptions: const OpenpanelEventOptions(profileId: 'user_123'),
+      properties: {'count': _clickCount},
     );
   }
 
-  void _identifyUser() {
-    // Identify the user
+  void _incrementClicks() {
+    Openpanel.instance.increment(property: 'clicks', value: 1);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("Incremented 'clicks' by 1")),
+    );
+  }
+
+  void _identify() {
     Openpanel.instance.setProfileId('user_123');
     Openpanel.instance.updateProfile(
       payload: const UpdateProfilePayload(
         profileId: 'user_123',
-        firstName: 'John',
-        lastName: 'Doe',
-        email: 'john@example.com',
-        properties: {'plan': 'premium'},
+        firstName: 'Jane',
+        lastName: 'Demo',
+        email: 'jane@example.com',
+        properties: {'plan': 'free'},
       ),
     );
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('User Identified')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Identified as user_123')),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final op = Openpanel.instance;
+    final opts = op.options;
+
     return Scaffold(
       appBar: AppBar(
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        title: Text(widget.title),
+        title: const Text('openpanel_flutter demo'),
       ),
-      body: Center(
+      body: SingleChildScrollView(
+        padding: const EdgeInsets.all(16),
         child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // SDK info card
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('SDK Info',
+                        style: Theme.of(context).textTheme.titleMedium),
+                    const SizedBox(height: 8),
+                    _InfoRow('Base URL', opts.url ?? 'https://api.openpanel.dev'),
+                    _InfoRow('Client ID', opts.clientId),
+                    _InfoRow('Batching', opts.batchingEnabled ? 'enabled' : 'disabled'),
+                    _InfoRow('Flush interval', '${opts.flushInterval.inSeconds}s'),
+                    _InfoRow('Max batch size', '${opts.maxBatchSize}'),
+                  ],
+                ),
+              ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
+
+            // Action buttons
+            Text('Actions', style: Theme.of(context).textTheme.titleMedium),
+            const SizedBox(height: 8),
+
             ElevatedButton(
-              onPressed: _identifyUser,
-              child: const Text('Identify User'),
+              onPressed: _trackButtonClick,
+              child: Text('Track button_clicked event (count: $_clickCount)'),
+            ),
+            const SizedBox(height: 8),
+
+            ElevatedButton(
+              onPressed: _incrementClicks,
+              child: const Text("Increment 'clicks' by 1"),
+            ),
+            const SizedBox(height: 8),
+
+            ElevatedButton(
+              onPressed: _identify,
+              child: const Text('Identify as user_123'),
+            ),
+            const SizedBox(height: 8),
+
+            ElevatedButton.icon(
+              onPressed: () => Navigator.pushNamed(context, '/debug'),
+              icon: const Icon(Icons.bug_report),
+              label: const Text('Open debug panel'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.deepPurple,
+                foregroundColor: Colors.white,
+              ),
             ),
           ],
         ),
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _InfoRow(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 130,
+            child: Text(label,
+                style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13)),
+          ),
+          Expanded(
+            child: Text(value,
+                style: const TextStyle(fontSize: 13),
+                overflow: TextOverflow.ellipsis),
+          ),
+        ],
       ),
     );
   }

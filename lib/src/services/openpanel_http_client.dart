@@ -3,8 +3,10 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:dio_smart_retry/dio_smart_retry.dart';
 import 'package:logger/logger.dart';
+import 'package:meta/meta.dart';
 import 'package:openpanel_flutter/openpanel_flutter.dart';
 import 'package:openpanel_flutter/src/constants/constants.dart';
+import 'package:openpanel_flutter/src/models/batch_payload.dart';
 import 'package:openpanel_flutter/src/models/post_event_payload.dart';
 
 import 'device_user_agent.dart';
@@ -21,6 +23,14 @@ class OpenpanelHttpClient {
     required Logger logger,
   }) : _logger = logger;
 
+  /// Constructor for testing — injects a pre-configured [Dio] instance so
+  /// tests can stub HTTP calls without going through [init].
+  @visibleForTesting
+  OpenpanelHttpClient.withDio(Dio dio, {required Logger logger})
+      : _dio = dio,
+        verbose = false,
+        _logger = logger;
+
   Future<void> init(OpenpanelOptions options) async {
     _dio = Dio(
       BaseOptions(
@@ -28,7 +38,7 @@ class OpenpanelHttpClient {
         headers: {
           'openpanel-client-id': options.clientId,
           'openpanel-sdk-name': 'openpanel-flutter',
-          'openpanel-sdk-version': '0.2.0',
+          'openpanel-sdk-version': '0.4.0',
           if (options.clientSecret != null)
             'openpanel-client-secret': options.clientSecret,
           'User-Agent': await DeviceUserAgent().getUserAgent(),
@@ -100,7 +110,9 @@ class OpenpanelHttpClient {
         'type': 'track',
         'payload': payload.toJson(),
       });
-      return response.data as String;
+      // Dio auto-decodes JSON responses to Map; only plain-text comes back as String.
+      final data = response.data;
+      return data is String ? data : data.toString();
     });
 
     if (response.error != null) {
@@ -108,6 +120,49 @@ class OpenpanelHttpClient {
     }
 
     return response.response;
+  }
+
+  Future<BatchResponse> batch(List<BatchedEvent> events) async {
+    try {
+      final response = await _dio.post<Map<String, dynamic>>(
+        '/track/batch',
+        data: {'events': events.map((e) => e.toJson()).toList()},
+      );
+      return BatchResponse.fromJson(response.data!);
+    } on DioException catch (e) {
+      final statusCode = e.response?.statusCode;
+      throw BatchTransportError(
+        e.message ?? e.toString(),
+        statusCode: statusCode,
+        isTransient: _isTransientDioFailure(e),
+      );
+    } on SocketException catch (e) {
+      throw BatchTransportError(e.message, isTransient: true);
+    }
+  }
+
+  /// Returns true when a [DioException] represents a failure that is NOT the
+  /// event's fault — the server or network never accepted the payload, so
+  /// retrying the same batch can succeed without any changes.
+  ///
+  /// Bundling 5xx with connect failures: both indicate the server couldn't
+  /// process the request through no fault of the event data; the server will
+  /// likely recover, and the same payload should be retried as-is.
+  bool _isTransientDioFailure(DioException e) {
+    switch (e.type) {
+      case DioExceptionType.connectionError:
+      case DioExceptionType.connectionTimeout:
+      case DioExceptionType.sendTimeout:
+      case DioExceptionType.receiveTimeout:
+        return true;
+      case DioExceptionType.badResponse:
+        final code = e.response?.statusCode ?? 0;
+        return code >= 500 && code < 600;
+      case DioExceptionType.unknown:
+        return e.error is SocketException;
+      default:
+        return false;
+    }
   }
 
   Future<ApiResponse> runApiCall<T, E>(Future<T> Function() apiCall) async {
