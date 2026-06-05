@@ -20,7 +20,7 @@ class OpenpanelOptions {
   /// Percentage of sessions that will be sampled for tracing (0.0 - 1.0)
   final double tracingSampleRate;
 
-  /// Enable batched event delivery via `/track/batch`.
+  /// Enable batched event delivery via the `{"type": "batch"}` envelope on `/track`.
   /// When true, events are persisted locally in SQLite and flushed in batches.
   /// Default is `false` — opt-in only, preserving identical behavior for existing users.
   final bool batchingEnabled;

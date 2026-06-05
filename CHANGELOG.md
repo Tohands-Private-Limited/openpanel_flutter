@@ -4,6 +4,7 @@
 - **Fix**: Transient batch failures (connect errors, timeouts, server 5xx) no longer count toward the retry budget — events stay queued for the next attempt. Only failures where the server actively processed or rejected the request (4xx) consume a retry slot.
 - **New**: `OpenpanelOptions.maxEventAge` (default 5 days): expired events are purged locally before each drain. The openpanel server rejects events with `__timestamp` older than 5 days, so this prevents indefinite queue growth when the device is offline for extended periods.
 - **New**: `BatchTransportError` now exposes `isTransient: bool` so consumers can differentiate retryable transport failures (offline / server 5xx) from non-retryable ones (4xx client errors).
+- **Change**: Batched delivery uses the canonical `{"type": "batch", "payload": [...]}` envelope on `POST /track` instead of the deprecated `POST /track/batch` (`{"events": [...]}`) endpoint. The response contract (`202 {accepted, rejected}`) is unchanged.
 
 ## 0.3.0
 - **Breaking**: Migrate to new OpenPanel tracking API
