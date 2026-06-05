@@ -23,10 +23,15 @@ void main() {
       expect(id, matches(uuidV7Pattern));
     });
 
-    test('sequential IDs are monotonically ordered', () {
+    test('sequential IDs have non-decreasing timestamp prefixes', () {
       final a = generateInsertId('device-1');
       final b = generateInsertId('device-1');
-      expect(b.compareTo(a), greaterThanOrEqualTo(0));
+      // Only the 48-bit millisecond timestamp (first 12 hex chars) is
+      // ordered; the remaining bits are random and may sort either way
+      // within the same millisecond.
+      final timestampA = a.substring(0, 13); // 'xxxxxxxx-xxxx'
+      final timestampB = b.substring(0, 13);
+      expect(timestampB.compareTo(timestampA), greaterThanOrEqualTo(0));
     });
 
     test('1000 IDs for the same deviceId are all unique', () {

@@ -52,21 +52,25 @@ class OpenpanelHttpClient {
     }
   }
 
+  /// Builds the `{type, payload}` envelope every [kTrackPath] request uses.
+  Map<String, dynamic> _envelope(String type, Object payload) =>
+      {'type': type, 'payload': payload};
+
   void updateProfile({
     required UpdateProfilePayload payload,
     required Map<String, dynamic> stateProperties,
   }) {
     runApiCall(() async {
-      await _dio.post('/track', data: {
-        'type': 'identify',
-        'payload': {
+      await _dio.post(
+        kTrackPath,
+        data: _envelope('identify', {
           ...payload.toJson(),
           'properties': {
             ...payload.properties,
             ...stateProperties,
           }
-        }
-      });
+        }),
+      );
     });
   }
 
@@ -76,14 +80,14 @@ class OpenpanelHttpClient {
     required int value,
   }) {
     runApiCall(() async {
-      _dio.post('/track', data: {
-        'type': 'increment',
-        'payload': {
+      _dio.post(
+        kTrackPath,
+        data: _envelope('increment', {
           'profileId': profileId,
           'property': property,
           'value': value,
-        }
-      });
+        }),
+      );
     });
   }
 
@@ -93,23 +97,21 @@ class OpenpanelHttpClient {
     required int value,
   }) {
     runApiCall(() async {
-      _dio.post('/track', data: {
-        'type': 'decrement',
-        'payload': {
+      _dio.post(
+        kTrackPath,
+        data: _envelope('decrement', {
           'profileId': profileId,
           'property': property,
           'value': value,
-        }
-      });
+        }),
+      );
     });
   }
 
   Future<String?> event({required PostEventPayload payload}) async {
     final response = await runApiCall(() async {
-      final response = await _dio.post('/track', data: {
-        'type': 'track',
-        'payload': payload.toJson(),
-      });
+      final response = await _dio.post(kTrackPath,
+          data: _envelope('track', payload.toJson()));
       // Dio auto-decodes JSON responses to Map; only plain-text comes back as String.
       final data = response.data;
       return data is String ? data : data.toString();
@@ -125,8 +127,8 @@ class OpenpanelHttpClient {
   Future<BatchResponse> batch(List<BatchedEvent> events) async {
     try {
       final response = await _dio.post<Map<String, dynamic>>(
-        '/track/batch',
-        data: {'events': events.map((e) => e.toJson()).toList()},
+        kTrackPath,
+        data: _envelope('batch', events.map((e) => e.toJson()).toList()),
       );
       return BatchResponse.fromJson(response.data!);
     } on DioException catch (e) {
