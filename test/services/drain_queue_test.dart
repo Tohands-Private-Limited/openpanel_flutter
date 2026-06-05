@@ -1,23 +1,16 @@
 import 'package:drift/drift.dart' as drift;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:logger/logger.dart';
 import 'package:openpanel_flutter/src/models/batch_payload.dart';
 import 'package:openpanel_flutter/src/services/batch_drainer.dart';
 import 'package:openpanel_flutter/src/services/database/event_queue_database.dart';
 import 'package:openpanel_flutter/src/services/event_queue.dart';
 
-// ---------------------------------------------------------------------------
-// Helpers / silence logger
-// ---------------------------------------------------------------------------
+import '../helpers/test_helpers.dart';
 
-class _SilentOutput extends LogOutput {
-  @override
-  void output(OutputEvent event) {}
-}
-
-Logger _silentLogger() =>
-    Logger(output: _SilentOutput(), level: Level.off);
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 EventQueueDatabase _freshDb() => EventQueueDatabase(NativeDatabase.memory());
 
@@ -44,7 +37,7 @@ void main() {
 
   setUp(() {
     db = _freshDb();
-    queue = EventQueue(db, maxRetries: 3, logger: _silentLogger());
+    queue = EventQueue(db, maxRetries: 3, logger: silentLogger());
   });
 
   tearDown(() async {
@@ -61,7 +54,7 @@ void main() {
         batchFn: batchFn,
         maxBatchSize: maxBatchSize,
         maxEventAge: maxEventAge,
-        logger: _silentLogger(),
+        logger: silentLogger(),
       );
 
   // -------------------------------------------------------------------------
@@ -144,10 +137,8 @@ void main() {
     final drainer = makeDrainer((events) async => BatchResponse(
           accepted: 0,
           rejected: [
-            const BatchRejection(
-                index: 0, reason: 'internal', error: 'err'),
-            const BatchRejection(
-                index: 1, reason: 'internal', error: 'err'),
+            const BatchRejection(index: 0, reason: 'internal', error: 'err'),
+            const BatchRejection(index: 1, reason: 'internal', error: 'err'),
           ],
         ));
     await drainer.drainOnce();
@@ -183,8 +174,7 @@ void main() {
   // -------------------------------------------------------------------------
   // BatchTransportError — non-transient (4xx) DOES increment retry counter
   // -------------------------------------------------------------------------
-  test(
-      'non-transient transport error (4xx, e.g. 401) increments retry counter',
+  test('non-transient transport error (4xx, e.g. 401) increments retry counter',
       () async {
     await _insertEvents(queue, 3);
 
@@ -205,7 +195,8 @@ void main() {
   // -------------------------------------------------------------------------
   // Unexpected exception — all rows incremented (no permanent poison)
   // -------------------------------------------------------------------------
-  test('unexpected exception — all rows incremented so poison batch is eventually dropped',
+  test(
+      'unexpected exception — all rows incremented so poison batch is eventually dropped',
       () async {
     await _insertEvents(queue, 2);
 
@@ -253,8 +244,7 @@ void main() {
           rejected: [
             const BatchRejection(
                 index: 99, reason: 'internal', error: 'oob bug'), // server bug
-            const BatchRejection(
-                index: 0, reason: 'internal', error: 'err'),
+            const BatchRejection(index: 0, reason: 'internal', error: 'err'),
           ],
         ));
     await drainer.drainOnce();
@@ -278,10 +268,9 @@ void main() {
     BatchResponse? captured;
     final drainer = BatchDrainer(
       queue: queue,
-      batchFn: (events) async =>
-          const BatchResponse(accepted: 1, rejected: []),
+      batchFn: (events) async => const BatchResponse(accepted: 1, rejected: []),
       maxBatchSize: 50,
-      logger: _silentLogger(),
+      logger: silentLogger(),
       onResponse: (r) => captured = r,
     );
     await drainer.drainOnce();
@@ -322,10 +311,9 @@ void main() {
     final sixDaysAgoMs =
         DateTime.now().subtract(const Duration(days: 6)).millisecondsSinceEpoch;
     for (final row in oldRows) {
-      await (db.update(db.pendingEvents)
-            ..where((t) => t.id.equals(row.id)))
-          .write(PendingEventsCompanion(
-              createdAtMs: drift.Value(sixDaysAgoMs)));
+      await (db.update(db.pendingEvents)..where((t) => t.id.equals(row.id)))
+          .write(
+              PendingEventsCompanion(createdAtMs: drift.Value(sixDaysAgoMs)));
     }
 
     // Enqueue 2 fresh events.

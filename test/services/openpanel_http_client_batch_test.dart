@@ -1,44 +1,17 @@
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:logger/logger.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:openpanel_flutter/src/models/batch_payload.dart';
 import 'package:openpanel_flutter/src/models/post_event_payload.dart';
 import 'package:openpanel_flutter/src/models/update_profile_payload.dart';
 import 'package:openpanel_flutter/src/services/openpanel_http_client.dart';
 
-/// Logger output that silently discards all lines.
-class _SilentOutput extends LogOutput {
-  @override
-  void output(OutputEvent event) {}
-}
-
-// ---------------------------------------------------------------------------
-// Mocks
-// ---------------------------------------------------------------------------
-
-class MockDio extends Mock implements Dio {}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Build a fake [Response] that Dio would return.
-Response<Map<String, dynamic>> _mockResponse({
-  required int statusCode,
-  required Map<String, dynamic> data,
-}) {
-  return Response<Map<String, dynamic>>(
-    requestOptions: RequestOptions(path: '/track/batch'),
-    statusCode: statusCode,
-    data: data,
-  );
-}
+import '../helpers/test_helpers.dart';
 
 void main() {
   late MockDio mockDio;
   late OpenpanelHttpClient client;
-  final logger = Logger(printer: PrettyPrinter(), output: _SilentOutput());
+  final logger = silentLogger();
 
   setUp(() {
     mockDio = MockDio();
@@ -61,11 +34,11 @@ void main() {
       payload: {'profileId': 'u2'},
     );
 
-    test('POSTs to /track/batch with correct body shape', () async {
+    test('POSTs to /track with the {"type": "batch"} envelope', () async {
       when(() => mockDio.post<Map<String, dynamic>>(
-            '/track/batch',
+            '/track',
             data: any(named: 'data'),
-          )).thenAnswer((_) async => _mockResponse(
+          )).thenAnswer((_) async => mockResponse<Map<String, dynamic>>(
             statusCode: 202,
             data: {'accepted': 2, 'rejected': []},
           ));
@@ -73,13 +46,15 @@ void main() {
       await client.batch([event1, event2]);
 
       final captured = verify(() => mockDio.post<Map<String, dynamic>>(
-            '/track/batch',
+            '/track',
             data: captureAny(named: 'data'),
           )).captured;
 
       final body = captured.first as Map<String, dynamic>;
-      expect(body.containsKey('events'), isTrue);
-      final events = body['events'] as List;
+      expect(body['type'], 'batch');
+      expect(body.containsKey('events'), isFalse,
+          reason: 'legacy /track/batch body shape must not be sent');
+      final events = body['payload'] as List;
       expect(events.length, 2);
       expect(events[0], {'type': 'track', 'payload': event1.payload});
       expect(events[1], {'type': 'identify', 'payload': event2.payload});
@@ -88,9 +63,9 @@ void main() {
     test('returns BatchResponse(accepted: 2, rejected: []) on happy-path 202',
         () async {
       when(() => mockDio.post<Map<String, dynamic>>(
-            '/track/batch',
+            '/track',
             data: any(named: 'data'),
-          )).thenAnswer((_) async => _mockResponse(
+          )).thenAnswer((_) async => mockResponse<Map<String, dynamic>>(
             statusCode: 202,
             data: {'accepted': 2, 'rejected': []},
           ));
@@ -103,9 +78,9 @@ void main() {
 
     test('returns BatchResponse with rejections parsed correctly', () async {
       when(() => mockDio.post<Map<String, dynamic>>(
-            '/track/batch',
+            '/track',
             data: any(named: 'data'),
-          )).thenAnswer((_) async => _mockResponse(
+          )).thenAnswer((_) async => mockResponse<Map<String, dynamic>>(
             statusCode: 202,
             data: {
               'accepted': 1,
@@ -127,12 +102,12 @@ void main() {
     test('throws BatchTransportError on DioException (non-2xx response)',
         () async {
       when(() => mockDio.post<Map<String, dynamic>>(
-            '/track/batch',
+            '/track',
             data: any(named: 'data'),
           )).thenThrow(DioException(
-        requestOptions: RequestOptions(path: '/track/batch'),
+        requestOptions: RequestOptions(path: '/track'),
         response: Response(
-          requestOptions: RequestOptions(path: '/track/batch'),
+          requestOptions: RequestOptions(path: '/track'),
           statusCode: 500,
         ),
         message: 'Internal Server Error',
@@ -152,10 +127,10 @@ void main() {
     test('throws BatchTransportError on network failure (no status code)',
         () async {
       when(() => mockDio.post<Map<String, dynamic>>(
-            '/track/batch',
+            '/track',
             data: any(named: 'data'),
           )).thenThrow(DioException(
-        requestOptions: RequestOptions(path: '/track/batch'),
+        requestOptions: RequestOptions(path: '/track'),
         message: 'Network unreachable',
         type: DioExceptionType.connectionError,
       ));
@@ -173,12 +148,12 @@ void main() {
     test('503 response → throws BatchTransportError with isTransient=true',
         () async {
       when(() => mockDio.post<Map<String, dynamic>>(
-            '/track/batch',
+            '/track',
             data: any(named: 'data'),
           )).thenThrow(DioException(
-        requestOptions: RequestOptions(path: '/track/batch'),
+        requestOptions: RequestOptions(path: '/track'),
         response: Response(
-          requestOptions: RequestOptions(path: '/track/batch'),
+          requestOptions: RequestOptions(path: '/track'),
           statusCode: 503,
         ),
         message: 'Service Unavailable',
@@ -196,12 +171,12 @@ void main() {
     test('400 response → throws BatchTransportError with isTransient=false',
         () async {
       when(() => mockDio.post<Map<String, dynamic>>(
-            '/track/batch',
+            '/track',
             data: any(named: 'data'),
           )).thenThrow(DioException(
-        requestOptions: RequestOptions(path: '/track/batch'),
+        requestOptions: RequestOptions(path: '/track'),
         response: Response(
-          requestOptions: RequestOptions(path: '/track/batch'),
+          requestOptions: RequestOptions(path: '/track'),
           statusCode: 400,
         ),
         message: 'Bad Request',
@@ -220,10 +195,10 @@ void main() {
         'DioException with connectionError type → throws BatchTransportError with isTransient=true',
         () async {
       when(() => mockDio.post<Map<String, dynamic>>(
-            '/track/batch',
+            '/track',
             data: any(named: 'data'),
           )).thenThrow(DioException(
-        requestOptions: RequestOptions(path: '/track/batch'),
+        requestOptions: RequestOptions(path: '/track'),
         message: 'Connection refused',
         type: DioExceptionType.connectionError,
       ));
@@ -239,12 +214,12 @@ void main() {
         'DioException with badResponse + 401 → throws BatchTransportError with isTransient=false',
         () async {
       when(() => mockDio.post<Map<String, dynamic>>(
-            '/track/batch',
+            '/track',
             data: any(named: 'data'),
           )).thenThrow(DioException(
-        requestOptions: RequestOptions(path: '/track/batch'),
+        requestOptions: RequestOptions(path: '/track'),
         response: Response(
-          requestOptions: RequestOptions(path: '/track/batch'),
+          requestOptions: RequestOptions(path: '/track'),
           statusCode: 401,
         ),
         message: 'Unauthorized',
@@ -263,16 +238,17 @@ void main() {
   // -------------------------------------------------------------------------
   // Smoke test: existing single-event path still routes correctly
   // -------------------------------------------------------------------------
-  group('legacy single-event paths (smoke test)', () {
-    test('updateProfile calls /track with type=identify', () async {
+  group('single-event paths (smoke test)', () {
+    setUp(() {
       when(() => mockDio.post<dynamic>(
-            '/track',
-            data: any(named: 'data'),
-          )).thenAnswer((_) async => Response(
-            requestOptions: RequestOptions(path: '/track'),
-            statusCode: 200,
-          ));
+                '/track',
+                data: any(named: 'data'),
+              ))
+          .thenAnswer(
+              (_) async => mockResponse<dynamic>(statusCode: 200, data: 'ok'));
+    });
 
+    test('updateProfile calls /track with type=identify', () async {
       client.updateProfile(
         payload: UpdateProfilePayload(profileId: 'u1', properties: {}),
         stateProperties: {},
@@ -292,15 +268,6 @@ void main() {
 
     test('event() omits profileId from /track payload when user is logged out',
         () async {
-      when(() => mockDio.post<dynamic>(
-            '/track',
-            data: any(named: 'data'),
-          )).thenAnswer((_) async => Response(
-            requestOptions: RequestOptions(path: '/track'),
-            statusCode: 200,
-            data: 'ok',
-          ));
-
       await client.event(
         payload: PostEventPayload(
           name: 'screen_view',
@@ -323,15 +290,6 @@ void main() {
 
     test('event() includes profileId in /track payload when user is logged in',
         () async {
-      when(() => mockDio.post<dynamic>(
-            '/track',
-            data: any(named: 'data'),
-          )).thenAnswer((_) async => Response(
-            requestOptions: RequestOptions(path: '/track'),
-            statusCode: 200,
-            data: 'ok',
-          ));
-
       await client.event(
         payload: PostEventPayload(
           name: 'screen_view',
